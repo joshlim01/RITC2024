@@ -63,7 +63,7 @@ def buy_stock(session, expected_return):
         # Check if the expected return value is a numerical type (float or int)
         if isinstance(expected_return[i], (float, int)):
             if expected_return[i] > 0:
-                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '1', 'action': 'BUY'})
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '20', 'action': 'BUY'})
             elif expected_return[i] < 0:
                 session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '1', 'action': 'BUY'})
         else:
@@ -75,7 +75,7 @@ def sell_stock(session, expected_return):
         # Check if the expected return value is a numerical type (float or int)
         if isinstance(expected_return[i], (float, int)):
             if expected_return[i] > 0:
-                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '1', 'action': 'SELL'})
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '10', 'action': 'SELL'})
             elif expected_return[i] < 0:
                 session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '1', 'action': 'SELL'})
         else:
