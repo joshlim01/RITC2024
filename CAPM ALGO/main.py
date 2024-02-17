@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 
 CAPM_vals = {}
 expected_return = {}
+prev_price = None
+
 # class that passes error message, ends the program
 class ApiException(Exception):
     pass
@@ -30,7 +32,7 @@ def get_tick(session):
     raise ApiException('fail - cant get tick')
 
 #code that parses the first and latest news instances for forward market predictions and the risk free rate
-#Important: this code only works if the only '%' character is in front of the RISK FREE RATE and the onle '$' character is in front of the forward price suggestions
+#Important: this code only works if the only '%' character is in front of the RISK FREE RATE and the only '$' character is in front of the forward price suggestions
 def get_news(session):
     news = session.get('http://localhost:9999/v1/news')    
     if news.ok:
@@ -54,19 +56,30 @@ def pop_prices(session):
         prices = price_act.json()
         return prices
     raise ApiException('fail - cant get securities')
-    
-#Buy or Sell function, put in your own parameters
-def buy_or_sell(session, expected_return):
+
+#Buy function
+def buy_stock(session, expected_return):
     for i in expected_return.keys():
         # Check if the expected return value is a numerical type (float or int)
         if isinstance(expected_return[i], (float, int)):
             if expected_return[i] > 0:
-                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '1', 'action': 'BUY'})
-            elif expected_return[i] < 0:
                 session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '1', 'action': 'BUY'})
+            elif expected_return[i] < 0:
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '1', 'action': 'BUY'})
         else:
             print(f"Expected return for {i} is not numerical: {expected_return[i]}")
-
+            
+#Sell function
+def sell_stock(session, expected_return):
+    for i in expected_return.keys():
+        # Check if the expected return value is a numerical type (float or int)
+        if isinstance(expected_return[i], (float, int)):
+            if expected_return[i] > 0:
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '1', 'action': 'SELL'})
+            elif expected_return[i] < 0:
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '1', 'action': 'SELL'})
+        else:
+            print(f"Expected return for {i} is not numerical: {expected_return[i]}")
 
 def main():
     with requests.Session() as session:
@@ -75,6 +88,8 @@ def main():
         alpha = pd.DataFrame(columns= ['ALPHA','BID', 'ASK', 'LAST', '%Ri', '%Rm'])
         gamma = pd.DataFrame(columns= ['GAMMA','BID', 'ASK', 'LAST', '%Ri', '%Rm'])
         theta = pd.DataFrame(columns= ['THETA','BID', 'ASK', 'LAST', '%Ri', '%Rm'])
+        price = pd.DataFrame(columns = ['ALPHA', 'GAMMA', 'THETA'])
+
         while get_tick(session) < 600 and not shutdown:
             #update the forward market price and rf rate
             get_news(session)
@@ -93,8 +108,6 @@ def main():
                 CAPM_vals['%RM'] = (CAPM_vals['forward']-ritm['LAST'].iloc[0])/ritm['LAST'].iloc[0]
             else:
                 CAPM_vals['%RM'] = ''
-                
-                
               
             ##update ALPHA bid-ask dataframe
             pdt_ALPHA = pd.DataFrame(pop_prices(session)[1])
@@ -125,11 +138,11 @@ def main():
                 theta['%Rm'] = (ritm['LAST']/ritm['LAST'].shift(-1)) - 1
                 if theta.shape[0] >= 31:
                     theta = theta.iloc[:30]
-            
+
             beta_alpha = (alpha['%Ri'].cov(ritm['%Rm']))/(ritm['%Rm'].var())
             beta_gamma = (gamma['%Ri'].cov(ritm['%Rm']))/(ritm['%Rm'].var())
             beta_theta = (theta['%Ri'].cov(ritm['%Rm']))/(ritm['%Rm'].var()) 
-            
+
             CAPM_vals['Beta - ALPHA'] = beta_alpha
             CAPM_vals['Beta - GAMMA'] = beta_gamma
             CAPM_vals['Beta - THETA'] = beta_theta
@@ -142,17 +155,29 @@ def main():
                 er_alpha = 'Wait for market forward price'
                 er_gamma = 'Wait for market forward price'
                 er_theta = 'Wait for market forward price'
-                
+            
             expected_return['ALPHA'] = er_alpha
             expected_return['GAMMA'] = er_gamma
             expected_return['THETA'] = er_theta
-            
-            #Uncomment this string to enable Buy/Sell
-            buy_or_sell(session, expected_return)
-            
+
             #print statement (print, expected_return function, any of the tickers, or CAPM_vals dictionary)
-            print(expected_return)
+            #print(expected_return)
+
+            price = ritmp['LAST']
+            forward = int(CAPM_vals['forward'])
+            print(forward)
             
-        
+            if forward is not None:
+                if price is not None:
+                    if(price < forward).any():
+                        # Buy the stock
+                        print("BUY")
+                        buy_stock(session, expected_return)
+                    elif(price > forward).any():
+                        # Sell the stock
+                        print("SELL")
+                        sell_stock(session, expected_return)
+
+
 if __name__ == '__main__':
     main()  
