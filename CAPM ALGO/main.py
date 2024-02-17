@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 
 CAPM_vals = {}
 expected_return = {}
+prev_price = None
 
 # class that passes error message, ends the program
 class ApiException(Exception):
@@ -63,9 +64,9 @@ def buy_stock(session, expected_return):
         if isinstance(expected_return[i], (float, int)):
             print(expected_return[i])
             if expected_return[i] > 0:
-                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '20', 'action': 'BUY'})
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '10000', 'action': 'BUY'})
             elif expected_return[i] < 0:
-                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '20', 'action': 'BUY'})
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '2000', 'action': 'BUY'})
         else:
             print(f"Expected return for {i} is not numerical: {expected_return[i]}")
             
@@ -76,9 +77,9 @@ def sell_stock(session, expected_return):
         if isinstance(expected_return[i], (float, int)):
             print(expected_return[i])
             if expected_return[i] > 0:
-                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'LIMIT', 'quantity': '10', 'action': 'SELL'})
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '2000', 'action': 'SELL'})
             elif expected_return[i] < 0:
-                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '10', 'action': 'SELL'})
+                session.post('http://localhost:9999/v1/orders', params={'ticker': i, 'type': 'MARKET', 'quantity': '5000', 'action': 'SELL'})
         else:
             print(f"Expected return for {i} is not numerical: {expected_return[i]}")
 
