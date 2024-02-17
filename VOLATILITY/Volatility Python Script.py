@@ -93,7 +93,7 @@ def main():
             assets2_option = pd.concat([assets2_option_1m,assets2_option_2m])
             assets2_option['Bid Spread'] = assets2_option['bs_model_price'] - assets2_option['bid']
             assets2_option['Ask Spread'] = assets2_option['bs_model_price'] - assets2_option['ask']
-            assets2_option['Decision'] = assets2_option.apply(lambda row: 'Sell' if row['Ask Spread'] < -0.1 else ('Buy' if row['Ask Spread'] > 0.1 else ''), axis=1)
+            assets2_option['Decision'] = assets2_option.apply(lambda row: 'Sell' if row['Bid Spread'] < -0.1 else ('Buy' if row['Ask Spread'] > 0.1 else ''), axis=1)
             #
             assets2= pd.concat([assets2_stock,assets2_option])
 
