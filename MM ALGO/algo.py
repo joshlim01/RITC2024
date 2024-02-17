@@ -1,40 +1,45 @@
 import signal
 import requests
 from time import sleep
+import pandas as pd
+import matplotlib.pyplot as plt
 
-# from multiprocessing import Pool
-import sys
-
-API_KEY = {'X-API_Key': 'QPALQPAL'}
-TICKERS = ["USD", "HAWK", "DOVE", "RITC", "RITU"]
+TICKERS = ["USD", "HAWK", "DOVE", "RIT_C", "RIT_U"]
 CONVERTER_FEE = 1500
-MAX_POSITION_SIZE = 10000
+POSITION_SIZE = 10000
 MARKET_FEE = 0.02
 ETF_LIMIT_FEE = 0.03
 STOCK_LIMIT_FEE = 0.04
 POSITION_LIMITS = {"gross": 0, "net": 0}
 
-# Price difference in arbitrage required to enter
+# TODO: tune parameters
 ARB_THRESHOLD = 0.3
 ETF_ARB_THRESHOLD = 0.3
-SPREAD = 0.3
-MIN_PRICE_MOVEMENT = 0.05
+SPREAD_MULTIPLIER = 0.9 #Slightly narrower than market bid ask
+MIN_PRICE_MOVEMENT = 0.1
+MAX_INVENTORY = POSITION_LIMITS["gross"]*0.7
 SPEEDBUMP = 0.5
 MAX_ORDERS = 5
 
+API_KEY = {'X-API-Key': 'GITHUB'}
 shutdown = False
-curr_prices = {ticker: 0 for ticker in TICKERS}
+session = requests.Session()
+session.headers.update(API_KEY)
+
+#Stores latest and previous price
+market_prices = {ticker: (0, 0) for ticker in TICKERS}
 curr_positions = {ticker: 0 for ticker in TICKERS}
 sum_positions = {"gross": 0, "net": 0}
-buy_orders = {ticker: {"price": 0, "order_id": 0} for ticker in TICKERS}
-sell_orders = {ticker: {"price": 0, "order_id": 0} for ticker in TICKERS}
-
+buy_orders = {ticker: {"price": 0, "order_id": None} for ticker in TICKERS}
+sell_orders = {ticker: {"price": 0, "order_id": None} for ticker in TICKERS}
+tick = 0
+prev_price = 0
 
 class ApiException(Exception):
-    # handler for api errors
     pass
 
-# handles a shutdown for ^C
+
+# code that lets us shut down if CTRL C is pressed
 def signal_handler(signum, frame):
     global shutdown
     signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -43,11 +48,12 @@ def signal_handler(signum, frame):
 
 # ---------- GET DATA FROM SERVER ------------ #
 def get_tick(session):
+    global tick
     resp = session.get('http://localhost:9999/v1/case')
     if resp.ok:
         case = resp.json()
         return case['tick']
-    raise ApiException('API error')
+    raise ApiException('fail - cant get tick')
 
 
 def get_bid_ask_volumes(session, ticker):
@@ -67,17 +73,19 @@ def get_bid_ask(session, ticker):
     resp = session.get('http://localhost:9999/v1/securities/book', params=payload)
     if resp.ok:
         book = resp.json()
-        return book['bids'][0], book['asks'][0]
+        if len(book) > 0:  # TODO fix this
+            return book['bids'][0]['price'], book['asks'][0]['price']
     raise ApiException('API error')
 
 
 # Gets estimate of market price - for now only uses first bid first ask
 def get_market_prices(session):
-    global curr_prices
+    global market_prices
     for ticker in TICKERS:
+        last_price = market_prices[ticker][1]
         bid, ask = get_bid_ask(session, ticker)
-        curr_prices[ticker] = (bid + ask) / 2
-
+        new_price = (bid + ask) / 2
+        market_prices[ticker] = (last_price, new_price)
 
 def update_positions(session):
     global curr_positions
@@ -90,20 +98,22 @@ def update_positions(session):
     net_limit = 0
 
     for ticker in buy_orders:
-        price, id = buy_orders[ticker]
-        resp = session.get('http://localhost:9999/v1/orders/{id}')
-        quantity = resp["quantity_filled"]
-        curr_positions[ticker] += quantity
+        id = buy_orders[ticker]["order_id"]
+        if id:
+            resp = session.get(f'http://localhost:9999/v1/orders/{id}')
+            quantity = resp.json()["quantity_filled"]
+            curr_positions[ticker] += quantity
+            print("BUY", id, ticker, quantity, curr_positions[ticker])
 
     for ticker in sell_orders:
-        price, id = sell_orders[ticker]
-        resp = session.get('http://localhost:9999/v1/orders/{id}')
-        quantity = resp["quantity_filled"]
-        curr_positions[ticker] -= quantity
+        id = sell_orders[ticker]["order_id"]
+        if id:
+            resp = session.get(f'http://localhost:9999/v1/orders/{id}')
+            quantity = resp.json()["quantity_filled"]
+            curr_positions[ticker] -= quantity
+            print("SELL", id, ticker, quantity, curr_positions[ticker])
 
     print("Current Positions:", curr_positions)
-
-    raise ApiException('API error')
 
 
 def get_position_limits(session):
@@ -127,40 +137,42 @@ def limit_order(session, security_name, price, quantity, action):
                                                                    'price': price, 'quantity': quantity,
                                                                    'action': action})
     if resp.ok:
+        print("Made order", resp.json()["order_id"])
         return resp.json()["order_id"]
+
 
 def delete_order(session, id):
     session.delete('http://localhost:9999/v1/orders/{}'.format(id))
 
 
 # ---------- ARBITRAGE OPS ------------ #
-# TODO: this should also work for RITCU
-def stock_ritc_arb(session):
-    sum_stocks = curr_prices["HAWK"] + curr_prices["DOVE"]
+# TODO: this should also work for RIT_CU
+def stock_RITC_arb(session):
+    sum_stocks = market_prices["HAWK"] + market_prices["DOVE"]
     # Fees from buying 2 stocks, selling 1 etf
-    if sum_stocks + 3 * MARKET_FEE + ARB_THRESHOLD < curr_prices["RITC"]:
-        market_order(session, "HAWK", MAX_POSITION_SIZE, "BUY")
-        market_order(session, "DOVE", MAX_POSITION_SIZE, "BUY")
-        print("CONVERT STOCK -> RITC")
-        market_order(session, "RITC", MAX_POSITION_SIZE, "SELL")
+    if sum_stocks + 3 * MARKET_FEE + ARB_THRESHOLD < market_prices["RIT_C"]:
+        market_order(session, "HAWK", POSITION_SIZE, "BUY")
+        market_order(session, "DOVE", POSITION_SIZE, "BUY")
+        print("CONVERT STOCK -> RIT_C")
+        market_order(session, "RIT_C", POSITION_SIZE, "SELL")
 
-    elif sum_stocks > curr_prices["RITC"] + 3 * MARKET_FEE + ARB_THRESHOLD:
-        market_order(session, "RITC", MAX_POSITION_SIZE, "BUY")
-        print("CONVERT RITC -> STOCK")
-        market_order(session, "HAWK", MAX_POSITION_SIZE, "SELL")
-        market_order(session, "DOVE", MAX_POSITION_SIZE, "SELL")
+    elif sum_stocks > market_prices["RIT_C"] + 3 * MARKET_FEE + ARB_THRESHOLD:
+        market_order(session, "RIT_C", POSITION_SIZE, "BUY")
+        print("CONVERT RIT_C -> STOCK")
+        market_order(session, "HAWK", POSITION_SIZE, "SELL")
+        market_order(session, "DOVE", POSITION_SIZE, "SELL")
 
 
-# Differences in pricing between RITC
-def ritc_ritu_arb(session):
-    usd, ritc, ritu = curr_prices["USD"], curr_prices["RITC"], curr_prices["RITU"]
-    if ritc * usd > ritu + 2 * MARKET_FEE + ETF_ARB_THRESHOLD:
-        market_order(session, "RITC", MAX_POSITION_SIZE, "SELL")
-        market_order(session, "RITU", MAX_POSITION_SIZE, "BUY")
+# Differences in pricing between RIT_C
+def RITC_RITU_arb(session):
+    USD, RIT_C, RIT_U = market_prices["USD"], market_prices["RIT_C"], market_prices["RIT_U"]
+    if RIT_C * USD > RIT_U + 2 * MARKET_FEE + ETF_ARB_THRESHOLD:
+        market_order(session, "RIT_C", POSITION_SIZE, "SELL")
+        market_order(session, "RIT_U", POSITION_SIZE, "BUY")
         # TODO: get transacted orders to get how much usd i need to buy
         quantity_usd = 0
         market_order(session, "USD", quantity_usd, "SELL")
-    elif ritc * usd < 2 * MARKET_FEE + ETF_ARB_THRESHOLD + ritu:
+    elif RIT_C * USD < 2 * MARKET_FEE + ETF_ARB_THRESHOLD + RIT_U:
         pass
         # TODO fill here
 
@@ -192,60 +204,66 @@ def make_market(session, ticker):
     global buy_orders
     global sell_orders
 
-    price = curr_prices[ticker]
+    prev_price, curr_price = market_prices[ticker]
+    
+    #TODO: delete really just for debugging
     bid, ask = get_bid_ask(session, ticker)
-
-    # TODO: factor this into spread
-    # bid_volumes, ask_volumes = get_bid_ask_volumes(session, ticker)
-    # volume_imbalance = (sum(bid_volumes) - sum(ask_volumes)) / sum(bid_volumes + ask_volumes)
-    # inventory_imbalance = curr_positions[ticker]
-    spread = ask - bid
-    m_bid = 1
-    m_ask = 1
-
     prev_bid = buy_orders[ticker]["price"]
     prev_ask = sell_orders[ticker]["price"]
-    bid = price - m_bid * spread
-    ask = price + m_ask * spread
 
-    orders = 1
-    quantity = max(MAX_POSITION_SIZE, POSITION_LIMITS["gross"] - sum_positions["gross"],
-                   POSITION_LIMITS["net"] - sum_positions["net"]) // 2
+    # Price change, recalculate bid ask
+    if abs(curr_price - prev_price) > MIN_PRICE_MOVEMENT:
+        print("Price moved from", prev_price, curr_price)
+        update_positions(session) #get latest numbers for inventory
+        quantity = POSITION_SIZE
 
-    # Delete old order if prices have moved too much
-    if abs(bid - prev_bid) > MIN_PRICE_MOVEMENT:
-        prev_bid_id = buy_orders[ticker]["id"]
-        delete_order(session, prev_bid_id)
+        # TODO: adjsut all of this - factor this into spread
+        # bid_volumes, ask_volumes = get_bid_ask_volumes(session, ticker)
+        # volume_imbalance = (sum(bid_volumes) - sum(ask_volumes)) / sum(bid_volumes + ask_volumes)
+        inventory = curr_positions[ticker]/POSITION_SIZE
+        inventory_multiplier = inventory/MAX_INVENTORY
+        spread = SPREAD_MULTIPLIER*(ask - bid)
+
+        bid = (curr_price - spread/2)*(1-inventory_multiplier)
+        ask = (curr_price + spread/2)*(1-inventory_multiplier)
+
+        # orders = 1
+        # quantity = max(POSITION_SIZE, POSITION_LIMITS["gross"] - sum_positions["gross"],
+        #                POSITION_LIMITS["net"] - sum_positions["net"]) // 2
+
+
+        #Adjust bid
+        prev_bid_id = buy_orders[ticker]["order_id"]
+        delete_order(session, prev_bid_id) 
+        # TODO: don't delete if bid hasn't moved much, though prob not big problem
         new_id = limit_order(session, ticker, bid, quantity, "BUY")
+        buy_orders[ticker] = {"price": bid, "order_id": new_id}
+        print("Replace buy", bid, prev_bid)
 
-    if abs(ask - prev_ask) > MIN_PRICE_MOVEMENT:
-        prev_ask_id = sell_orders[ticker]["id"]
+        #Adjust ask
+        prev_ask_id = sell_orders[ticker]["order_id"]
         delete_order(session, prev_ask_id)
-        limit_order(session, ticker, ask, quantity, "SELL")
+        new_id = limit_order(session, ticker, ask, quantity, "SELL")
+        sell_orders[ticker] = {"price": ask, "order_id": new_id}
+        print("Replace sell", ask, prev_ask)
 
 
 # #TODO: add safety feature: if price too far from purchase, offload at market
 # def offload_inventory(session):
 #   for ticker in tickers:
 #     if open_position[ticker] > MAX_HOLD:
-#   market_order(session, security_name, action):
+#   market_order(session, security_name, action)
 
 # ---------- RUN ALGO ------------ #
 def main():
-    with requests.Session() as s:
-        s.headers.update(API_KEY)
-        tick = get_tick(s)
-        get_position_limits(s)
+    with requests.Session() as session:
+        session.headers.update(API_KEY)
 
-    while (tick > 5) and (tick < 295) and not shutdown:
-        print("Current tick:", tick)
-        get_market_prices(s)
-        update_positions(s)
-        make_market(s, "RITC")
-        sleep(SPEEDBUMP)
-        tick = get_tick(s)
+        while get_tick(session) < 295 and not shutdown:
+            get_market_prices(session)
+            make_market(session, "RIT_C")
+            sleep(SPEEDBUMP)
 
 
 if __name__ == '__main__':
-    signal.signal(signal.SIGINT, signal_handler)
     main()
