@@ -59,32 +59,39 @@ def main():
             # Fetch news data
             news = get_data(session, 'news')
             
-            # Filter news for announcements and news
-            announcements = [item for item in news if 'Announcement' in item['headline']]
-            relevant_announcement = announcements[0] if announcements else None
-            news_items = [item for item in news if 'Announcement' not in item['headline']]
-            relevant_expected_volatility = news_items[0] if news_items else None
+            # Function to extract volatility from news items
+            def headline_vol(session):
+                volatility_array = []
+                for item in news:
+                    if 'Risk' in item['headline']:
+                        # Get the initial volatility
+                        int_volatility = float(item['body'].split('volatility is ')[1].split('%')[0]) / 100
+                        volatility_array.append(int_volatility)
+                    elif 'News' in item['headline']:
+                        news_items = [item for item in news if 'Announcement' not in item['headline']]
+
+                        relevant_expected_volatility = news_items[0] if news_items else None
+
+                        if relevant_expected_volatility:
+                            volatility_info = relevant_expected_volatility['body']
+                            volatility_text = volatility_info.split('between ')[1].split(', and')[0]
+                            volatility_range = [int(x.strip('%'))/100 for x in volatility_text.split(' ~ ')]
+                            if len(volatility_range) == 2:
+                                   E_vol1, E_vol2 = volatility_range
+                                   mean_volatility = sum(volatility_range) / 2
+                                   volatility_array.append(mean_volatility)
+
+                    elif 'Announcement' in item['headline']:
+                        # Get volatility from announcement
+                        ann_volatility = float(item['body'].split('RTM is ')[1].split('%')[0]) / 100
+                        volatility_array.append(ann_volatility)
+                    
+                vol=volatility_array[0]      
+                return vol
             
-            # Get volatility from announcement
-            if relevant_announcement:
-                volatility = float(relevant_announcement['body'].split('is ')[1].split('%')[0]) / 100
-                print(f"Volatility={volatility:.2f}", end=", ")
-            else:
-                print("No relevant announcement found.")
-            
-            # Get volatility range from news
-            if relevant_expected_volatility:
-                volatility_info = relevant_expected_volatility['body']
-                volatility_text = volatility_info.split('between ')[1].split(', and')[0]
-                volatility_range = [int(x.strip('%'))/100 for x in volatility_text.split(' ~ ')]
-                if len(volatility_range) == 2:
-                    E_vol1, E_vol2 = volatility_range
-                    mean_volatility = sum(volatility_range) / len(volatility_range)
-                    print(f"E_vol1={E_vol1:.2f}, E_vol2={E_vol2:.2f}, Mean of Volatility={mean_volatility:.3f}")
-                else:
-                    print("Invalid volatility range format.")
-            else:
-                print("No relevant expected volatility found.")
+            # Get volatility array
+            volatility = headline_vol(session)
+            print(f"Volatility: {volatility}")
             
             # Sleep for 1 second
             sleep(1)
