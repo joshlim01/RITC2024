@@ -148,7 +148,7 @@ def main():
             expected_return['THETA'] = er_theta
             
             #Uncomment this string to enable Buy/Sell
-            #buy_or_sell(session, expected_return)
+            buy_or_sell(session, expected_return)
             
             #print statement (print, expected_return function, any of the tickers, or CAPM_vals dictionary)
             print(expected_return)
