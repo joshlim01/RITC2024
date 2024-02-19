@@ -74,7 +74,7 @@ def calculate_iv(row):
                                         row['time_to_expiry'], 0, row['option_price'], 
                                         row['option_type'])
 
-def black_scholes_call(s, k, t, r, sigma):
+def black_scholes_call(s, k, t, r, sigma, output = "price"):
     """
     Calculate the Black-Scholes call option price.
 
@@ -87,9 +87,12 @@ def black_scholes_call(s, k, t, r, sigma):
     d1 = (np.log(s / k) + (r + 0.5 * sigma ** 2) * t) / (sigma * np.sqrt(t))
     d2 = d1 - sigma * np.sqrt(t)
     call_price = s * norm.cdf(d1) - k * np.exp(-r * t) * norm.cdf(d2)
-    return call_price
+    if output == "price":
+        return call_price
+    if output == "delta":
+        return norm.cdf(d1)
 
-def black_scholes_put(s, k, t, r, sigma):
+def black_scholes_put(s, k, t, r, sigma, output = "price"):
     """
     Calculate the Black-Scholes put option price.
 
@@ -102,14 +105,19 @@ def black_scholes_put(s, k, t, r, sigma):
     d1 = (np.log(s / k) + (r + 0.5 * sigma ** 2) * t) / (sigma * np.sqrt(t))
     d2 = d1 - sigma * np.sqrt(t)
     put_price = k * np.exp(-r * t) * norm.cdf(-d2) - s * norm.cdf(-d1)
-    return put_price
+    if output == "price":
+        return put_price
+    if output == 'delta':
+        return -norm.cdf(-d1)
 
-def calculate_bs_price(row, s, sigma, t, r=0):
+def calculate_bs_price(row, s, sigma, t, r=0, output = "price"):
     k = row['strike']
     if row['type'] == 'CALL':
-        return black_scholes_call(s, k, t, r, sigma)
+        return black_scholes_call(s, k, t, r, sigma, output = output)
     else:
-        return black_scholes_put(s, k, t, r, sigma)
+        return black_scholes_put(s, k, t, r, sigma, output = output)
+
+        
     
 def fetch_data(session, endpoint):
     resp = session.get(f'http://localhost:9999/v1/{endpoint}')
@@ -150,4 +158,42 @@ def headline_vol(session):
         
     vol=volatility_array[0]      
     return vol
+
+
+def calculate_hedge_ratios(df):
+    
+    # Function to extract and return the absolute first element of the delta array
+    def extract_first_and_abs(delta_array):
+        return abs(delta_array[0])
+
+    # Adding a new column to the DataFrame with the absolute delta values
+    df['Absolute Delta'] = df['delta'].apply(extract_first_and_abs)
+
+    # List to store the hedge ratios
+    hedge_ratios = []
+
+    # Iterating over the DataFrame two rows at a time
+    for i in range(1, len(df) + 1, 2):
+        call_delta = df.loc[i, 'Absolute Delta']
+        put_delta = df.loc[i + 1, 'Absolute Delta']
+
+        # Calculating the hedge ratios
+        if call_delta >= put_delta and put_delta != 0:  # Avoid division by zero
+            call_hedge_ratio = 1
+            put_hedge_ratio = call_delta / put_delta
+        elif call_delta < put_delta:
+            put_hedge_ratio = 1
+            call_hedge_ratio = put_delta / call_delta
+        else:
+            call_hedge_ratio = None  # or some default value
+            put_hedge_ratio = None
+
+        # Adding the hedge ratios for call and put rows
+        hedge_ratios.extend([call_hedge_ratio, put_hedge_ratio])
+
+    # Adding the hedge ratios to the DataFrame
+    df['Hedge Ratio'] = hedge_ratios
+    df['Hedge Ratio'] = df['Hedge Ratio'].round(2)
+    return df
+
 
