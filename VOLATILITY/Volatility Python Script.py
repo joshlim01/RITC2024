@@ -106,39 +106,4 @@ if __name__ == '__main__':
         main()
 
 
-years_remaining = (600 - get_tick(session))/3600
-maturity_1month = (600 - get_tick(session))/3600 - 1/12
-
-assets = pd.DataFrame(get_s(session))
-assets2 = assets.drop(columns=['size', 'position','vwap', 'nlv', 'bid_size', 'ask_size', 'volume', 'realized', 'unrealized', 'currency', 
-                               'total_volume', 'limits', 'is_tradeable', 'is_shortable', 'interest_rate', 'start_period', 'stop_period', 'unit_multiplier', 
-                               'description', 'unit_multiplier', 'display_unit', 'min_price', 'max_price', 'start_price', 'quoted_decimals', 'trading_fee', 'limit_order_rebate',
-                               'min_trade_size', 'max_trade_size', 'required_tickers', 'underlying_tickers', 'bond_coupon', 'interest_payments_per_period', 'base_security', 'fixing_ticker',
-                               'api_orders_per_second', 'execution_delay_ms', 'interest_rate_ticker', 'otc_price_range'])
-
-for row in assets2.index.values:
-    if 'P' in assets2['ticker'].iloc[row]:
-        assets2['type'].iloc[row] = 'PUT'
-    elif 'C' in assets2['ticker'].iloc[row]:
-        assets2['type'].iloc[row] = 'CALL'
-    
-assets2_stock= assets2.iloc[0:1]
-assets2_options = assets2.iloc[1:]
-assets2_options['strike'] = assets2_options['ticker'].str[-2:]
-assets2_options['strike'] = assets2_options['strike'].astype(float)
-assets2_option_1m = assets2_options.iloc[:20]
-assets2_option_2m = assets2_options.iloc[21:]
-
-s = assets2_stock["last"][0]
-sigma = headline_vol(session)
-assets2_option_1m['bs_model_price'] = assets2_option_1m.apply(lambda row: calculate_bs_price(row,
-                                                                                         s=s, sigma=sigma, 
-                                                                                         t = maturity_1month ), axis=1)
-
-assets2_option_2m['bs_model_price'] = assets2_option_2m.apply(lambda row: calculate_bs_price(row,
-                                                                                         s=s, sigma=sigma, 
-                                                                                         t = years_remaining ), axis=1)
-#
-assets2= pd.concat([assets2_stock,assets2_option_1m,assets2_option_2m])
-
 
