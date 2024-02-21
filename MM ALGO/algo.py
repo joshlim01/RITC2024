@@ -15,19 +15,19 @@ POSITION_LIMITS = {"gross": 0, "net": 0}
 ARB_THRESHOLD = 0.05
 ARB_GAP = 0.02
 MIN_ARB_DIFF = ARB_THRESHOLD + 3 * MARKET_FEE
-OFFER_THRESHOLD = 0.1
+OFFER_THRESHOLD = 0.25
 
 # MM thresholds
-SPREAD_MULTIPLIER = 0.95  # Slightly narrower than market bid ask
+SPREAD_MULTIPLIER = 1  # Slightly narrower than market bid ask
 MIN_SPREAD_PCT = 0.004  # Spread as percent of price
-MIN_SPREAD = 0.15
+MIN_SPREAD = 0.2
 INVENTORY_MULTIPLIER = 0.005
 MAX_LOSS = 0.0025  # Price change 0.3% from best price -> force exit
 STOP_LOSS = 0.1
 NUM_POSITIONS = 3
 SPEEDBUMP = 0.5
 
-API_KEY = {'X-API-Key': 'GITHUB'}
+API_KEY = {'X-API-Key': 'LOJIC40A'}
 shutdown = False
 session = requests.Session()
 session.headers.update(API_KEY)
@@ -214,9 +214,14 @@ def stock_RITC_arb(session):
 # Manually accept offer, unload this way
 etf_positions = {ticker: {"volume": 1, "bid": 1, "ask": 1, "cost": 1, "stop_loss": 1} for ticker in
                      ["RIT_C", "RIT_U"]}
+
+MARKET_PCT = 0.1
+FIRST_INCREASE = 0.025
+SECOND_INCREASE = 0.05
+STOP_LOSS = 0.1
+
 def manage_position(session):
     global etf_positions
-    MARKET_PCT = 0.15
 
     while not exit_event.is_set():
         update_positions(session)
@@ -240,23 +245,28 @@ def manage_position(session):
                     if abs(prev_volume - volume) > 500:  # Accepted tender offer
                         delete_orders(session, ticker)
                         if volume > 0:
-                            stop_loss = max(cost, bid-0.1)
+                            stop_loss = max(cost, bid - STOP_LOSS)
                         else:
-                            stop_loss = min(cost, ask + 0.1)
+                            stop_loss = min(cost, ask + STOP_LOSS)
 
                         market_quantity = math.floor(MARKET_PCT * volume)
                         rem_quantity = (volume - market_quantity)//2
-                        if volume > 300:
+                        
+                        if volume > 500:
                             market_order(session, ticker, market_quantity, "SELL")
-                            limit_order(session, ticker, ask + 0.05, rem_quantity, "SELL")
-                            limit_order(session, ticker, ask + 0.1, rem_quantity, "SELL")
-                            print("Curr volume:", volume, "sold market:", market_quantity, "limit 1:", ask+0.05, "limit 2:", ask+0.1)
-                        elif volume < -300:
+                            limit_order(session, ticker, ask + FIRST_INCREASE, rem_quantity, "SELL")
+                            limit_order(session, ticker, ask + SECOND_INCREASE, rem_quantity, "SELL")
+                            print("Selling curr volume:", volume, "sold market:", market_quantity, "limit 1:", ask+FIRST_INCREASE, 
+                                  "limit 2:", ask+SECOND_INCREASE, "stop loss:", stop_loss)
+                        elif volume < -500:
                             market_order(session, ticker, -market_quantity, "BUY")
-                            limit_order(session, ticker, bid - 0.05, -rem_quantity, "BUY")
-                            limit_order(session, ticker, bid - 0.1, -rem_quantity, "BUY")
-                            print("Curr volume:", volume, "bought market:", -market_quantity, "limit 1:", bid - 0.05,
-                                  "limit 2:", bid - 0.1)
+                            limit_order(session, ticker, bid - FIRST_INCREASE, -rem_quantity, "BUY")
+                            limit_order(session, ticker, bid - SECOND_INCREASE, -rem_quantity, "BUY")
+                            print("Buying curr volume:", volume, "bought market:", -market_quantity, "limit 1:", bid-FIRST_INCREASE,
+                                  "limit 2:", bid - SECOND_INCREASE, "stop loss:", stop_loss)
+                        else:
+                            print("Offload rest", volume)
+                            offload_inventory(session, ticker)
 
                     etf_positions[ticker] = {"volume": volume, "bid": bid, "ask": ask,
                                              "cost": cost, "stop_loss": stop_loss}
@@ -289,14 +299,13 @@ def process_offer(session, tender_offer):
     else:
         print("Bid:", bid, "New tender", tender_offer)
 
-
     # Client wants to buy from us
     if tender_offer["action"] == "SELL" and price > ask + OFFER_THRESHOLD:
-        resp = session.post(f'http://localhost:9999/v1/tenders/{id}')
+        session.post(f'http://localhost:9999/v1/tenders/{id}')
         print("Accepted buy offer", quantity)
 
     elif tender_offer["action"] == "BUY" and price < bid - OFFER_THRESHOLD:
-        resp = session.post(f'http://localhost:9999/v1/tenders/{id}')
+        session.post(f'http://localhost:9999/v1/tenders/{id}')
         print("Accepted sell offer", quantity)
 
 
@@ -315,32 +324,33 @@ def check_losses(session):
             offload_inventory(session, ticker)
 
 
-def make_market(session, ticker):
+def make_market(session, tickers):
     while not exit_event.is_set():
         update_positions(session)
         check_losses(session)
-
-        bid, ask = curr_positions[ticker]["bid"], curr_positions[ticker]["ask"]
-        price_t = (bid + ask) / 2
-        spread = ask - bid
-
-        if spread > MIN_SPREAD:
-            inventory = curr_positions[ticker]["volume"]
-            inventory_multiplier = (inventory / POSITION_LIMITS["gross"]) * INVENTORY_MULTIPLIER
-
-            price_t *= (1 - inventory_multiplier)
-            quantity = POSITION_SIZE * NUM_POSITIONS
-            set_spread = spread * SPREAD_MULTIPLIER / 2
-
-            print("Initial BID, ASK:", bid, ask)
-            bid = price_t - set_spread
-            ask = price_t + set_spread
-            print("Inventory:", inventory, "Submitted BID, ASK:", bid, ask)
-
-            # Adjust bid and ask
-            delete_orders(session, ticker)
-            limit_order(session, ticker, bid, quantity, "BUY")
-            limit_order(session, ticker, ask, quantity, "SELL")
+        
+        for ticker in tickers:
+            bid, ask = curr_positions[ticker]["bid"], curr_positions[ticker]["ask"]
+            price_t = (bid + ask) / 2
+            spread = ask - bid
+    
+            if spread > MIN_SPREAD:
+                inventory = curr_positions[ticker]["volume"]
+                inventory_multiplier = (inventory / POSITION_LIMITS["gross"]) * INVENTORY_MULTIPLIER
+    
+                price_t *= (1 - inventory_multiplier)
+                quantity = POSITION_SIZE * NUM_POSITIONS
+                set_spread = spread * SPREAD_MULTIPLIER / 2
+    
+                print(f"{ticker} Initial BID, ASK:", bid, ask)
+                bid = price_t - set_spread
+                ask = price_t + set_spread
+                print(f"{ticker} Inventory:", inventory, "Submitted BID, ASK:", bid, ask)
+    
+                # Adjust bid and ask
+                delete_orders(session, ticker)
+                limit_order(session, ticker, bid, quantity, "BUY")
+                limit_order(session, ticker, ask, quantity, "SELL")
 
         sleep(SPEEDBUMP)
 
@@ -356,8 +366,8 @@ def main():
         update_tick(session)
 
         # MARKET MAKING STRAT
-        # thread_mm = threading.Thread(target=make_market, args=(session, "RIT_C"))
-        # thread_mm.start()
+        thread_mm = threading.Thread(target=make_market, args=(session, ["RIT_C", "HAWK", "DOVE"]))
+        thread_mm.start()
 
         # ARBITRAGE STRAT
         # thread_arb = threading.Thread(target=stock_RITC_arb, args=(session,))
@@ -367,21 +377,23 @@ def main():
         # thread_offers = threading.Thread(target=get_tender_offers, args=(session,))
         # thread_offers.start()
 
+        """
         thread_get_offers = threading.Thread(target=get_tender_offers, args=(session,))
         thread_get_offers.start()
 
         thread_offers = threading.Thread(target=manage_position, args=(session,))
         thread_offers.start()
+        """
 
         while tick < 295 and not shutdown:
             sleep(SPEEDBUMP)
             # update_tick(session)
         exit_event.set()
 
-        # thread_mm.join()
+        thread_mm.join()
         # thread_arb.join()
-        thread_get_offers.join()
-        thread_offers.join()
+        #thread_get_offers.join()
+        #thread_offers.join()
 
 
 if __name__ == '__main__':
