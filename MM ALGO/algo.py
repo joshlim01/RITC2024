@@ -1,3 +1,4 @@
+import math
 import signal
 import requests
 from time import sleep
@@ -11,21 +12,20 @@ STOCK_LIMIT_FEE = 0.04
 POSITION_LIMITS = {"gross": 0, "net": 0}
 
 # Arb and tender offer thresholds
-ARB_THRESHOLD = 0.01
+ARB_THRESHOLD = 0.05
+ARB_GAP = 0.02
 MIN_ARB_DIFF = ARB_THRESHOLD + 3 * MARKET_FEE
-ETF_ARB_THRESHOLD = 0.05
-MIN_ETF_ARB = 0
-OFFER_THRESHOLD = 0.2
+OFFER_THRESHOLD = 0.1
 
 # MM thresholds
 SPREAD_MULTIPLIER = 0.95  # Slightly narrower than market bid ask
 MIN_SPREAD_PCT = 0.004  # Spread as percent of price
 MIN_SPREAD = 0.15
 INVENTORY_MULTIPLIER = 0.005
-MAX_LOSS = 0.003  # Price change 0.3% from best price -> force exit
-
+MAX_LOSS = 0.0025  # Price change 0.3% from best price -> force exit
+STOP_LOSS = 0.1
+NUM_POSITIONS = 3
 SPEEDBUMP = 0.5
-MAX_ORDERS = 5
 
 API_KEY = {'X-API-Key': 'GITHUB'}
 shutdown = False
@@ -34,7 +34,8 @@ session.headers.update(API_KEY)
 exit_event = threading.Event()
 
 tick = 0
-curr_positions = {ticker: {"volume": 0, "bid": 0, "ask": 0, "cost": 0, "stop_loss": 0} for ticker in TICKERS}
+curr_positions = {ticker: {"volume": 1, "bid": 1, "ask": 1, "cost": 1, "stop_loss": 1} for ticker in TICKERS}
+
 
 class ApiException(Exception):
     pass
@@ -69,23 +70,13 @@ def update_tick(session):
         raise ApiException("Cannot connect to server")
 
 
-def get_bid_ask_volumes(session, ticker):
-    payload = {'ticker': ticker, 'limit': 3}
-    resp = session.get('http://localhost:9999/v1/securities/book', params=payload)
-    if resp.ok:
-        book = resp.json()
-        bid_volumes = sum(bid['quantity'] for bid in book['bids'])
-        ask_volumes = sum(ask['quantity'] for ask in book['asks'])
-        return bid_volumes, ask_volumes
-    raise ApiException('API error')
-
-
 def calc_stop_loss(market_price, cost, position):
     if position > 0:
-        # change = market_price - cost #TODO: maybe add to the multiplier
-        return market_price * (1 - MAX_LOSS)
+        # return market_price * (1 - MAX_LOSS)
+        return market_price - STOP_LOSS
     else:
-        return market_price * (1 + MAX_LOSS)
+        # return market_price * (1 + MAX_LOSS)
+        return market_price + STOP_LOSS
 
 
 def update_positions(session):
@@ -109,9 +100,11 @@ def update_positions(session):
 
                 if (prev_volume >= 0 and volume < 0) or (prev_volume <= 0 and volume > 0):
                     stop_loss = calc_stop_loss(price, cost, volume)
+                # elif prev_cost != 0 and abs((cost - prev_cost)/prev_cost) > 0.001: #Significant change in average cost
+                #     stop_loss = calc_stop_loss(price, cost, volume)
                 elif volume > 0:
                     stop_loss = max(stop_loss, calc_stop_loss(price, cost, volume))
-                else:
+                elif volume < 0:
                     stop_loss = min(stop_loss, calc_stop_loss(price, cost, volume))
 
                 curr_positions[ticker] = {"volume": volume, "bid": bid, "ask": ask,
@@ -130,14 +123,17 @@ def market_order(session, security_name, quantity, action):
     session.post('http://localhost:9999/v1/orders', params={'ticker': security_name, 'type': 'MARKET',
                                                             'quantity': remainder, 'action': action})
 
+    print("market order", action, quantity)
+
 
 def limit_order(session, security_name, price, quantity, action):
     orders = int(abs(quantity) // POSITION_SIZE)
     remainder = int(abs(quantity % POSITION_SIZE))
 
     for o in range(orders):
-        session.post('http://localhost:9999/v1/orders', params={'ticker': security_name, 'type': 'LIMIT', 'price': price,
-                                                                'quantity': POSITION_SIZE, 'action': action})
+        session.post('http://localhost:9999/v1/orders',
+                     params={'ticker': security_name, 'type': 'LIMIT', 'price': price,
+                             'quantity': POSITION_SIZE, 'action': action})
 
     session.post('http://localhost:9999/v1/orders', params={'ticker': security_name, 'type': 'LIMIT', 'price': price,
                                                             'quantity': remainder, 'action': action})
@@ -161,24 +157,42 @@ def offload_inventory(session, ticker):
 
 # ---------- ARBITRAGE OPS ------------ #
 # TODO: This should also work with RIT_U
+def unwind_arb(session, positions):
+    for ticker, action in positions:
+        market_order(session, ticker, POSITION_SIZE, action)
+
+
 def stock_RITC_arb(session):
+    arb_positions = None
     while not exit_event.is_set():
+        update_positions(session)
+        check_losses(session)
+
         hawk_bid, hawk_ask = curr_positions["HAWK"]["bid"], curr_positions["HAWK"]["ask"]
         dove_bid, dove_ask = curr_positions["DOVE"]["bid"], curr_positions["DOVE"]["ask"]
         ritc_bid, ritc_ask = curr_positions["RIT_C"]["bid"], curr_positions["RIT_C"]["ask"]
 
-        # In theory, stocks are undervalued, ritc is overvalued
-        if MIN_ARB_DIFF < ritc_bid - (hawk_ask + dove_ask):
-            print("RITC overpriced, difference:", ritc_bid - (hawk_ask + dove_ask))
-            market_order(session, "HAWK", POSITION_SIZE, "BUY")
-            market_order(session, "DOVE", POSITION_SIZE, "BUY")
-            market_order(session, "RIT_C", POSITION_SIZE, "SELL")
+        if arb_positions and abs(ritc_bid - (hawk_ask + dove_ask)) < ARB_GAP:
+            print("UNWINDING:", ritc_bid, hawk_ask, dove_ask)
+            print(ritc_bid - (hawk_ask + dove_ask))
+            unwind_arb(session, arb_positions)
+            arb_positions = None
 
-        elif MIN_ARB_DIFF < (hawk_bid + dove_bid) - ritc_ask:
-            print("RITC underpriced, difference:", (hawk_bid + dove_bid) - ritc_ask)
-            market_order(session, "RIT_C", POSITION_SIZE, "BUY")
-            market_order(session, "HAWK", POSITION_SIZE, "SELL")
-            market_order(session, "DOVE", POSITION_SIZE, "SELL")
+        else:
+            # In theory, stocks are undervalued, ritc is overvalued
+            if MIN_ARB_DIFF < ritc_bid - (hawk_ask + dove_ask):
+                print("RITC overpriced, difference:", ritc_bid - (hawk_ask + dove_ask))
+                market_order(session, "HAWK", POSITION_SIZE, "BUY")
+                market_order(session, "DOVE", POSITION_SIZE, "BUY")
+                market_order(session, "RIT_C", POSITION_SIZE, "SELL")
+                arb_positions = [("HAWK", "SELL"), ("DOVE", "SELL"), ("RIT_C", "BUY")]
+
+            elif MIN_ARB_DIFF < (hawk_bid + dove_bid) - ritc_ask:
+                print("RITC underpriced, difference:", (hawk_bid + dove_bid) - ritc_ask)
+                market_order(session, "RIT_C", POSITION_SIZE, "BUY")
+                market_order(session, "HAWK", POSITION_SIZE, "SELL")
+                market_order(session, "DOVE", POSITION_SIZE, "SELL")
+                arb_positions = [("HAWK", "BUY"), ("DOVE", "BUY"), ("RIT_C", "SELL")]
 
         sleep(SPEEDBUMP)
 
@@ -197,6 +211,59 @@ def stock_RITC_arb(session):
 
 
 # ---------- TENDER OFFERS ------------ #
+# Manually accept offer, unload this way
+etf_positions = {ticker: {"volume": 1, "bid": 1, "ask": 1, "cost": 1, "stop_loss": 1} for ticker in
+                     ["RIT_C", "RIT_U"]}
+def manage_position(session):
+    global etf_positions
+    MARKET_PCT = 0.15
+
+    while not exit_event.is_set():
+        update_positions(session)
+        check_losses(session)
+        resp = session.get('http://localhost:9999/v1/securities')
+
+        if resp.ok:
+            orders = resp.json()
+
+            for order in orders:
+                ticker = order["ticker"]
+
+                if ticker == "RIT_C" or ticker == "RIT_U":
+                    volume = order["position"]
+                    cost = order["vwap"]
+                    bid = curr_positions[ticker]["bid"]
+                    ask = curr_positions[ticker]["ask"]
+                    prev_volume = etf_positions[ticker]["volume"]
+                    stop_loss = etf_positions[ticker]["stop_loss"]
+
+                    if abs(prev_volume - volume) > 500:  # Accepted tender offer
+                        delete_orders(session, ticker)
+                        if volume > 0:
+                            stop_loss = max(cost, bid-0.1)
+                        else:
+                            stop_loss = min(cost, ask + 0.1)
+
+                        market_quantity = math.floor(MARKET_PCT * volume)
+                        rem_quantity = (volume - market_quantity)//2
+                        if volume > 300:
+                            market_order(session, ticker, market_quantity, "SELL")
+                            limit_order(session, ticker, ask + 0.05, rem_quantity, "SELL")
+                            limit_order(session, ticker, ask + 0.1, rem_quantity, "SELL")
+                            print("Curr volume:", volume, "sold market:", market_quantity, "limit 1:", ask+0.05, "limit 2:", ask+0.1)
+                        elif volume < -300:
+                            market_order(session, ticker, -market_quantity, "BUY")
+                            limit_order(session, ticker, bid - 0.05, -rem_quantity, "BUY")
+                            limit_order(session, ticker, bid - 0.1, -rem_quantity, "BUY")
+                            print("Curr volume:", volume, "bought market:", -market_quantity, "limit 1:", bid - 0.05,
+                                  "limit 2:", bid - 0.1)
+
+                    etf_positions[ticker] = {"volume": volume, "bid": bid, "ask": ask,
+                                             "cost": cost, "stop_loss": stop_loss}
+
+        sleep(SPEEDBUMP)
+
+
 def get_tender_offers(session):
     while not exit_event.is_set():
         resp = session.get('http://localhost:9999/v1/tenders')
@@ -210,31 +277,32 @@ def get_tender_offers(session):
 
 
 def process_offer(session, tender_offer):
-    print("New tender", tender_offer)
-
+    update_positions(session)
     price = tender_offer["price"]
     quantity = tender_offer["quantity"]
     ticker = tender_offer["ticker"]
     id = tender_offer["tender_id"]
     bid, ask = curr_positions[ticker]["bid"], curr_positions[ticker]["ask"]
 
-    #Client wants to buy from us
+    if tender_offer["action"] == "SELL":
+        print("Ask:", ask, "New tender", tender_offer)
+    else:
+        print("Bid:", bid, "New tender", tender_offer)
+
+
+    # Client wants to buy from us
     if tender_offer["action"] == "SELL" and price > ask + OFFER_THRESHOLD:
         resp = session.post(f'http://localhost:9999/v1/tenders/{id}')
-        if resp.json()["success"]:
-            market_order(session, ticker, quantity//2, "BUY")
-            print("Accepted buy offer", quantity)
+        print("Accepted buy offer", quantity)
 
     elif tender_offer["action"] == "BUY" and price < bid - OFFER_THRESHOLD:
         resp = session.post(f'http://localhost:9999/v1/tenders/{id}')
-        if resp.json()["success"]:
-            market_order(session, ticker, quantity//2, "SELL")
-            print("Accepted sell offer", quantity)
+        print("Accepted sell offer", quantity)
 
 
 # ---------- MARKET MAKER ------------ #
 def check_losses(session):
-    for ticker in TICKERS:
+    for ticker in ["RIT_C", "RIT_U"]:
         stop_loss = curr_positions[ticker]["stop_loss"]
         volume = curr_positions[ticker]["volume"]
         bid, ask = curr_positions[ticker]["bid"], curr_positions[ticker]["ask"]
@@ -261,23 +329,8 @@ def make_market(session, ticker):
             inventory_multiplier = (inventory / POSITION_LIMITS["gross"]) * INVENTORY_MULTIPLIER
 
             price_t *= (1 - inventory_multiplier)
-            quantity = POSITION_SIZE*3
-
+            quantity = POSITION_SIZE * NUM_POSITIONS
             set_spread = spread * SPREAD_MULTIPLIER / 2
-
-            # TODO: adjsut all of this - factor this into spread
-            # bid_volumes, ask_volumes = get_bid_ask_volumes(session, ticker)
-            # volume_imbalance = (sum(bid_volumes) - sum(ask_volumes)) / sum(bid_volumes + ask_volumes)
-            # orders = 1
-            # quantity = max(POSITION_SIZE, POSITION_LIMITS["gross"] - sum_positions["gross"],
-            #                POSITION_LIMITS["net"] - sum_positions["net"]) // 2
-
-            # TODO: uneven bid ask
-            # bid_multiplier = min(0.0, inventory_multiplier)
-            # ask_multiplier = max(0.0, inventory_multiplier)
-            # bid = bid * (1 - bid_multiplier) * (1 + SPREAD_MULTIPLIER)
-            # ask = ask * (1 - ask_multiplier) * (1 - SPREAD_MULTIPLIER)
-            # print("Inventory:", inventory, "Bid multiplier:", bid_multiplier, "Ask multiplier:", ask_multiplier)
 
             print("Initial BID, ASK:", bid, ask)
             bid = price_t - set_spread
@@ -303,10 +356,10 @@ def main():
         update_tick(session)
 
         # MARKET MAKING STRAT
-        thread_mm = threading.Thread(target=make_market, args=(session, "RIT_C"))
-        thread_mm.start()
+        # thread_mm = threading.Thread(target=make_market, args=(session, "RIT_C"))
+        # thread_mm.start()
 
-        #ARBITRAGE STRAT
+        # ARBITRAGE STRAT
         # thread_arb = threading.Thread(target=stock_RITC_arb, args=(session,))
         # thread_arb.start()
 
@@ -314,14 +367,21 @@ def main():
         # thread_offers = threading.Thread(target=get_tender_offers, args=(session,))
         # thread_offers.start()
 
+        thread_get_offers = threading.Thread(target=get_tender_offers, args=(session,))
+        thread_get_offers.start()
+
+        thread_offers = threading.Thread(target=manage_position, args=(session,))
+        thread_offers.start()
+
         while tick < 295 and not shutdown:
             sleep(SPEEDBUMP)
-            update_tick(session)
+            # update_tick(session)
         exit_event.set()
 
-        thread_mm.join()
-        #thread_arb.join()
-        # thread_offers.join()
+        # thread_mm.join()
+        # thread_arb.join()
+        thread_get_offers.join()
+        thread_offers.join()
 
 
 if __name__ == '__main__':
