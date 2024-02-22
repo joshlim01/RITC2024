@@ -76,7 +76,7 @@ def main():
             assets2_options = assets2.iloc[1:]
             assets2_options['strike'] = assets2_options['ticker'].str[-2:]
             assets2_options['strike'] = assets2_options['strike'].astype(float)
-            assets2_options["S-K"] = float(s) - assets2_options["strike"]
+            assets2_options["S-K"] = s.iloc[0] - assets2_options["strike"]
 
             
             #split and find ATM
@@ -116,7 +116,7 @@ def main():
             assets2_options['Bid Spread'] = assets2_options['bs_model_price'] - assets2_options['bid']
             assets2_options['Ask Spread'] = assets2_options['bs_model_price'] - assets2_options['ask']
             assets2_options['Average Spread'] = (assets2_options['Bid Spread']+assets2_options['Ask Spread'])/2
-            assets2_options['Decision'] = assets2_options.apply(lambda row: 'Sell' if row['Bid Spread'] < -0.1 else ('Buy' if row['Ask Spread'] > 0.1 else ''), axis=1)
+            assets2_options['Decision'] = assets2_options.apply(lambda row: 'Sell' if row['Bid Spread'] < -0.15 else ('Buy' if row['Ask Spread'] > 0.15 else ''), axis=1)
             
             #hedge ratio
             assets2_options = calculate_hedge_ratios(assets2_options)
@@ -156,9 +156,11 @@ def main():
             #plt.plot(y)
             #plt.plotsize(50, 30)
             sleep(0.5)
-         
-if __name__ == '__main__':
-        main()
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category=RuntimeWarning)        
+    if __name__ == '__main__':
+            main()
 
 
 

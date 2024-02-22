@@ -3,6 +3,8 @@ import signal
 import requests
 from time import sleep
 import pandas as pd
+import warnings
+
 
 def Bidask_percentage(row):
     a = row['ask']
@@ -21,7 +23,7 @@ def Market_depth_ratio(row):
 class ApiException(Exception):
     pass
 
-API_KEY = {'X-API-Key': 'ASDFGH12'}
+API_KEY = {'X-API-Key': '7ASCTY2D'}
 shutdown = False
 
 def get_tick(session):
@@ -68,6 +70,8 @@ class MarketDepthTracker:
             slope = (current_market_depth - previous_market_depth) / 0.5  # Assuming the time step is 0.2 seconds
         self.previous_market_depth[ticker] = current_market_depth
         return slope
+    
+session = requests.Session()
 
 def main():
     with requests.Session() as session:
@@ -98,29 +102,27 @@ def main():
                     ten_offer[ticker] = tender['action']
                     ten_type[ticker] = tender['is_fixed_bid']
                     tender_prices[ticker] = price
-                    tender_quantity[ticker]=tender['quantity']
+                    tender_quantity=tender['quantity']
                 etf['ten_offer'] = etf.index.map(ten_offer)
                 etf['ten_type'] = etf.index.map(ten_type)
                 etf['P_ten'] = etf.index.map(tender_prices)
-                etf['Quantity']=etf.index.map(tender_quantity)
+                
                 # Define decision-making functions
-                
-                
-                def make_buy(row, margin = 0.05):
-                    if row['ten_offer'] == 'BUY': #they sell, we sell later
+                def make_buy(row, margin = 0.05, margin_tender = 0.18):
+                    if row['ten_offer'] == 'BUY':
                         if not row['ten_type']:
-                            return [row['bid'] - 0.3,row['bid']-0.02]
+                            return [row['bid'] - 0.02 - margin_tender]
                         else:
-                            return 'Take' if row['P_ten']+0.02+margin<row['bid'] else 'Decline'
+                            return 'Take' if row['P_ten'] < row['bid'] - 0.02 + margin else 'Decline'
                     else:
                         return 0
-                    
-                def make_sell(row, margin = 0.05):
-                    if row['ten_offer'] == 'SELL':# they buy, we buy later
+                
+                def make_sell(row,margin = 0.05,margin_tender = 0.18):
+                    if row['ten_offer'] == 'SELL':
                         if not row['ten_type']:
-                            return [row['ask']+0.3,row['ask'] + 0.04],
+                            return [row['ask']+0.02+margin_tender],
                         else:
-                            return 'Take' if row['P_ten'] +0.02+margin> row['ask'] else 'Decline'
+                            return 'Take' if row['P_ten']> row['ask'] + 0.02 + margin else 'Decline'
                     else:
                         return 0
                 
@@ -129,15 +131,14 @@ def main():
                 etf['Mkt Dpt'] = etf.apply(Market_depth_ratio, axis=1)
                 etf['Market Depth Slope'] = etf.apply(market_depth_tracker.get_market_depth_slope, axis=1)
                 etf['Direction'] = etf.apply(lambda row: 'UP' if row['Mkt Dpt'] < 0.09 else ('Down' if row['Mkt Dpt'] > 10 else ''), axis=1)
-                etf['Decision'] = etf.apply(lambda row: make_buy(row,margin=0.05) if row['ten_offer'] == 'BUY' else make_sell(row,margin=0.05) if row['ten_offer'] == 'SELL' else '', axis=1)
+                etf['Decision'] = etf.apply(lambda row: make_buy(row) if row['ten_offer'] == 'BUY' else make_sell(row) if row['ten_offer'] == 'SELL' else '', axis=1)
                 # Print the DataFrame with relevant columns
-                print(etf[['position', 'last',  'bid', 'ask', 'Direction', 'P_ten','Quantity', 'Decision']].to_markdown(), end='\n'*2)
+                print(etf[['position', 'last',  'bid', 'ask', 'Direction', 'P_ten', 'Decision']].to_markdown(), end='\n'*2)
                 
                 sleep(0.5)
 
 
-
-
-
-if __name__ == '__main__':
-    main()
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category=RuntimeWarning)
+    if __name__ == '__main__':
+        main()
