@@ -104,14 +104,7 @@ def main():
                 etf['P_ten'] = etf.index.map(tender_prices)
                 etf['Quantity']=etf.index.map(tender_quantity)
                 # Define decision-making functions
-                def make_sell(row, margin = 0.05):
-                    if row['ten_offer'] == 'SELL':# they buy, we buy later
-                        if not row['ten_type']:
-                            return [row['ask']+0.02,row['ask'] + 0.34],
-                        else:
-                            return 'Take' if row['P_ten'] +0.02+margin> row['ask'] else 'Decline'
-                    else:
-                        return 0
+                
                 
                 def make_buy(row, margin = 0.05):
                     if row['ten_offer'] == 'BUY': #they sell, we sell later
@@ -121,13 +114,22 @@ def main():
                             return 'Take' if row['P_ten']+0.02+margin<row['bid'] else 'Decline'
                     else:
                         return 0
+                    
+                def make_sell(row, margin = 0.05):
+                    if row['ten_offer'] == 'SELL':# they buy, we buy later
+                        if not row['ten_type']:
+                            return [row['ask']+0.3,row['ask'] + 0.04],
+                        else:
+                            return 'Take' if row['P_ten'] +0.02+margin> row['ask'] else 'Decline'
+                    else:
+                        return 0
                 
                 # Apply decision-making functions based on the type of tender offer (BUY or SELL)
                 etf['Spread(%)'] = etf.apply(Bidask_percentage, axis=1)
                 etf['Mkt Dpt'] = etf.apply(Market_depth_ratio, axis=1)
                 etf['Market Depth Slope'] = etf.apply(market_depth_tracker.get_market_depth_slope, axis=1)
                 etf['Direction'] = etf.apply(lambda row: 'UP' if row['Mkt Dpt'] < 0.09 else ('Down' if row['Mkt Dpt'] > 10 else ''), axis=1)
-                etf['Decision'] = etf.apply(lambda row: make_sell(row) if row['ten_offer'] == 'SELL' else make_buy(row) if row['ten_offer'] == 'BUY' else '', axis=1)
+                etf['Decision'] = etf.apply(lambda row: make_buy(row,margin=0.05) if row['ten_offer'] == 'BUY' else make_sell(row,margin=0.05) if row['ten_offer'] == 'SELL' else '', axis=1)
                 # Print the DataFrame with relevant columns
                 print(etf[['position', 'last',  'bid', 'ask', 'Direction', 'P_ten','Quantity', 'Decision']].to_markdown(), end='\n'*2)
                 
