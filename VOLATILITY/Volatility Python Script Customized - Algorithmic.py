@@ -48,7 +48,7 @@ def get_s(session):
         return prices
     raise ApiException('fail - cant get securities')    
 
-def main(margin = 0.15, delta_limit_threshold = 200): # margin is in spread % terms
+def main(margin = 0.15, delta_limit_threshold = 200, delta_hedge_switch = "ON"): # margin is in spread % terms
     
     with requests.Session() as session:
         session.headers.update(API_KEY)
@@ -150,21 +150,23 @@ def main(margin = 0.15, delta_limit_threshold = 200): # margin is in spread % te
             
 
             #DYNAMIC DELTA HEDGE orders
-            try:
-                delta_limit = get_delta_limit(session)
-            except Exception:
-                pass
-            threshhold = delta_limit_threshold
-            if helper['share_exposure'].iloc[0] > threshhold:
-                excess_delta = helper['share_exposure'].iloc[0] - threshhold
-                market_order(session, "RTM", abs(excess_delta), "SELL")
-            if helper['share_exposure'].iloc[0]  <  -threshhold:
-                excess_delta = helper['share_exposure'].iloc[0] + threshhold
-                market_order(session, "RTM", abs(excess_delta), "BUY")
-            if assets2["position"].iloc[1:].sum() == 0 and abs(assets2["position"].iloc[0]) < 50000:
-                excess_delta = helper['share_exposure'].iloc[0]
-                market_order(session, "RTM", 100, "BUY", POSITION_SIZE = abs(excess_delta)) if excess_delta < 0 \
-                else market_order(session, "RTM", abs(excess_delta), "SELL")
+            if delta_hedge_switch == "ON":                
+                try:
+                    delta_limit = get_delta_limit(session)
+                except Exception:
+                    pass
+                threshhold = delta_limit_threshold
+                if helper['share_exposure'].iloc[0] > threshhold:
+                    excess_delta = helper['share_exposure'].iloc[0] - threshhold
+                    market_order(session, "RTM", abs(excess_delta), "SELL")
+                if helper['share_exposure'].iloc[0]  <  -threshhold:
+                    excess_delta = helper['share_exposure'].iloc[0] + threshhold
+                    market_order(session, "RTM", abs(excess_delta), "BUY")
+                if assets2["position"].iloc[1:].sum() == 0 and abs(assets2["position"].iloc[0]) < 50000:
+                    excess_delta = helper['share_exposure'].iloc[0]
+                    market_order(session, "RTM", 100, "BUY", POSITION_SIZE = abs(excess_delta)) if excess_delta < 0 \
+                    else market_order(session, "RTM", abs(excess_delta), "SELL")
+            else: pass
             
 
             assets_refreshed = pd.DataFrame(get_s(session))
