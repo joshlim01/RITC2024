@@ -10,6 +10,7 @@ import numpy as np
 from scipy.stats import norm
 import numpy as np
 import warnings
+import re
 
 def black_scholes(s, k, t, r, sigma, option_type):
     """
@@ -37,43 +38,48 @@ def black_scholes(s, k, t, r, sigma, option_type):
 
     return option_price
 
-def goal_seek_implied_volatility(s, k, t, market_price, option_type, r = 0 , tol=1e-6, max_iter=100):
-    """
-    Calculate implied volatility using a goal-seeking method.
 
-    s: spot price of the underlying asset
-    k: strike price
-    t: time to expiration in years
-    r: risk-free rate
-    market_price: market price of the option
-    option_type: 'CALL' or 'PUT'
-    tol: tolerance for convergence
-    max_iter: maximum number of iterations
-    """
-    lower_vol = 0
-    upper_vol = 3  # A high upper bound for volatility (300%)
-    sigma = (upper_vol + lower_vol) / 2
+# ---------- TRADE EXECUTION ------------ #
+def market_order(session, security_name, quantity, action, POSITION_SIZE = 10000):
+    orders = int(abs(quantity) // POSITION_SIZE)
+    remainder = int(abs(quantity % POSITION_SIZE))
 
-    for _ in range(max_iter):
-        price = black_scholes(s, k, t, r, sigma, option_type)
-        if abs(price - market_price) < tol:
-            return sigma
+    for o in range(orders):
+        session.post('http://localhost:9999/v1/orders', params={'ticker': security_name, 'type': 'MARKET',
+                                                                'quantity': POSITION_SIZE, 'action': action})
 
-        # Adjust bounds based on whether calculated price is higher or lower than market price
-        if price > market_price:
-            upper_vol = sigma
-        else:
-            lower_vol = sigma
+    session.post('http://localhost:9999/v1/orders', params={'ticker': security_name, 'type': 'MARKET',
+                                                            'quantity': remainder, 'action': action})
 
-        sigma = (upper_vol + lower_vol) / 2
 
-    raise ValueError("Implied volatility not found within maximum iterations")
+def limit_order(session, security_name, price, quantity, action, POSITION_SIZE = 10):
+    orders = int(abs(quantity) // POSITION_SIZE)
+    remainder = int(abs(quantity % POSITION_SIZE))
+
+    for o in range(orders):
+        session.post('http://localhost:9999/v1/orders',
+                     params={'ticker': security_name, 'type': 'LIMIT', 'price': price,
+                             'quantity': POSITION_SIZE, 'action': action})
+
+    session.post('http://localhost:9999/v1/orders', params={'ticker': security_name, 'type': 'LIMIT', 'price': price,
+                                                            'quantity': remainder, 'action': action})
+
+
+def delete_all_orders(session, ticker, POSITION_SIZE = 10):
+    resp = session.get(f'http://localhost:9999/v1/orders?status=OPEN&ticker={ticker}')
+    if resp.ok:
+        orders = resp.json()
+        for order in orders:
+            id = order["order_id"]
+            session.delete('http://localhost:9999/v1/orders/{}'.format(id))
+
+def offload_inventory(session, ticker, POSITION_SIZE = 10):
+    bid, ask, volume = get_asset_info(session, ticker)
+    action = "BUY" if volume < 0 else "SELL"
+    market_order(session, ticker, volume, action)
     
-    
-def calculate_iv(row):
-    return goal_seek_implied_volatility(row['spot_price'], row['strike_price'], 
-                                        row['time_to_expiry'], 0, row['option_price'], 
-                                        row['option_type'])
+# ---------- TRADE EXECUTION ------------ #
+
 
 def black_scholes_call(s, k, t, r, sigma, output="price"):
     with warnings.catch_warnings():
@@ -183,4 +189,27 @@ def calculate_hedge_ratios(df):
     df['Hedge Ratio'] = df['Hedge Ratio'].round(2)
     return df
 
+def extract_delta(text):
+    # Regular expression pattern to match numbers formatted as "7,000" or "20,000"
+    # This pattern matches one to two digits (\d{1,2}), followed by a comma and three digits (,\d{3})
+    pattern = r"The delta limit for this heat is (\d{1,2},\d{3})"
 
+    # Search for the pattern in the text
+    match = re.search(pattern, text)
+
+    # If a match is found, return the number, removing any commas
+    if match:
+        # Remove commas and convert to integer
+        return int(match.group(1).replace(",", ""))
+    else:
+        return None
+
+def get_delta_limit(session):
+    news = get_data(session, 'news')
+    delta_news = news[-2]
+    if delta_news["headline"] == "Delta Limit":
+       body = delta_news["body"]
+       delta_limit = extract_delta(body)
+    else: pass 
+    return delta_limit
+    
