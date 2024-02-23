@@ -97,7 +97,7 @@ def offload_inventory(session, ticker):
 
 
 # ------- TENDER OFFER -------- #
-OFFER_THRESHOLD = 0.2
+OFFER_THRESHOLD = 0.18 #TODO: INCREASE IF VOLATILE
 SPLIT = 20
 SLEEP_AMOUNT = 0.5 #TODO: make this dynamic based on order size and price
 
@@ -132,7 +132,7 @@ def process_offer(session, tender_offer):
 
 def unroll_offer(session, quantity, ticker, action):
     round_quantity = quantity // SPLIT
-    print("Unrolling")
+    print("Unrolling tender offer")
 
     for i in range(SPLIT):
         market_order(session, ticker, round_quantity, action)
@@ -141,12 +141,13 @@ def unroll_offer(session, quantity, ticker, action):
 
 # ---------- MARKET MAKER ------------ #
 SPREAD_MULTIPLIER = 0.95  # Slightly narrower than market bid ask
-MIN_SPREAD = {"RIT_C": 0.15, "HAWK": 0.1, "DOVE": 0.1}
+MIN_SPREAD = {"RIT_C": 0.15, "HAWK": 0.1, "DOVE": 0.1, "RIT_U": 0.15}
 INVENTORY_MULTIPLIER = 0.008
-NUM_POSITIONS = 3
+NUM_POSITIONS = 4
 POS_MULT = 0.5
 
 def make_market(session, tickers):
+    print("making market")
     while not exit_event.is_set():
         for ticker in tickers:
             bid, ask, position = get_asset_info(session, ticker)
@@ -164,7 +165,7 @@ def make_market(session, tickers):
                 ask = price_t + set_spread
                 bid_quantity = POSITION_SIZE*NUM_POSITIONS if position < 0 else max(0, POSITION_SIZE*NUM_POSITIONS - POS_MULT*position)
                 ask_quantity = POSITION_SIZE*NUM_POSITIONS if position > 0 else max(0, POSITION_SIZE*NUM_POSITIONS - POS_MULT*position)
-                # print(f"{ticker} Submitted BID {bid_quantity}: {bid}, ASK {ask_quantity}: {ask}")
+                print(f"{ticker} New orders: submitted BID {bid_quantity}: {bid}, ASK {ask_quantity}: {ask}")
                 limit_order(session, ticker, bid, bid_quantity, "BUY")
                 limit_order(session, ticker, ask, ask_quantity, "SELL")
             elif position < 0:
@@ -193,9 +194,9 @@ def main():
         thread_get_offers = threading.Thread(target=get_tender_offers, args=(session,))
         thread_get_offers.start()
 
-        # while update_tick(session) < 295 and not shutdown:
-        #     sleep(SPEEDBUMP)
-        # exit_event.set()
+        while update_tick(session) < 295 and not shutdown:
+            sleep(SPEEDBUMP)
+        exit_event.set()
 
         thread_mm.join()
         thread_get_offers.join()
